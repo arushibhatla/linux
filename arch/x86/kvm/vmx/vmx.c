@@ -61,6 +61,12 @@
 #include "vmx.h"
 #include "x86.h"
 
+extern atomic_t total_exit_count;
+extern atomic_t individual_exit_count[2][69];
+
+extern atomic64_t total_timer_count;
+extern atomic64_t individual_timer_count[2][69];
+
 MODULE_AUTHOR("Qumranet");
 MODULE_LICENSE("GPL");
 
@@ -5839,13 +5845,28 @@ void dump_vmcs(void)
  * The guest has exited.  See if we can fix it or if we need userspace
  * assistance.
  */
+/* *
+ extern atomic_t total_exit_count;
+ extern atomic_t individual_exit_count[2][69]
+ 
+ extern atomic64_t total_timer_count;
+ extern atomic64_t individual_timer_count[2][69]
+ * */
 static int vmx_handle_exit(struct kvm_vcpu *vcpu,
 	enum exit_fastpath_completion exit_fastpath)
 {
+	u64 begin = rdtsc();
+    	u64 stop = 0;
+   	u32 ret = 0;
+	
 	struct vcpu_vmx *vmx = to_vmx(vcpu);
 	u32 exit_reason = vmx->exit_reason;
 	u32 vectoring_info = vmx->idt_vectoring_info;
-
+	
+	atomic_add(1, &total_exit_count);
+    	if(exit_reason < 69){
+        	atomic_add(1,&individual_exit_count[1][exit_reason]);
+    	}
 	trace_kvm_exit(exit_reason, vcpu, KVM_ISA_VMX);
 
 	/*
@@ -5903,6 +5924,9 @@ static int vmx_handle_exit(struct kvm_vcpu *vcpu,
 			vcpu->run->internal.ndata++;
 			vcpu->run->internal.data[3] =
 				vmcs_read64(GUEST_PHYSICAL_ADDRESS);
+		stop = rdtsc();
+                atomic64_add((stop - begin),&total_timer_count);
+                atomic64_add((stop-begin),&individual_timer_count[1][exit_reason]);
 		}
 		return 0;
 	}
@@ -5934,26 +5958,63 @@ static int vmx_handle_exit(struct kvm_vcpu *vcpu,
 	if (exit_reason >= kvm_vmx_max_exit_handlers)
 		goto unexpected_vmexit;
 #ifdef CONFIG_RETPOLINE
-	if (exit_reason == EXIT_REASON_MSR_WRITE)
-		return kvm_emulate_wrmsr(vcpu);
-	else if (exit_reason == EXIT_REASON_PREEMPTION_TIMER)
-		return handle_preemption_timer(vcpu);
-	else if (exit_reason == EXIT_REASON_INTERRUPT_WINDOW)
-		return handle_interrupt_window(vcpu);
-	else if (exit_reason == EXIT_REASON_EXTERNAL_INTERRUPT)
-		return handle_external_interrupt(vcpu);
-	else if (exit_reason == EXIT_REASON_HLT)
-		return kvm_emulate_halt(vcpu);
-	else if (exit_reason == EXIT_REASON_EPT_MISCONFIG)
-		return handle_ept_misconfig(vcpu);
+    if (exit_reason == EXIT_REASON_MSR_WRITE){
+        ret = kvm_emulate_wrmsr(vcpu);
+        stop = rdtsc();
+        atomic64_add((stop - begin),&total_timer_count);
+        atomic64_add((stop-begin),&individual_timer_count[1][exit_reason]);
+        return ret;
+    }
+    else if (exit_reason == EXIT_REASON_PREEMPTION_TIMER){
+        ret = handle_preemption_timer(vcpu);
+        stop = rdtsc();
+        atomic64_add((stop - begin),&total_timer_count);
+        atomic64_add((stop-begin),&individual_timer_count[1][exit_reason]);
+        return ret;
+    }
+    else if (exit_reason == EXIT_REASON_INTERRUPT_WINDOW){
+        ret = handle_interrupt_window(vcpu);
+        stop = rdtsc();
+        atomic64_add((stop - begin),&total_timer_count);
+        atomic64_add((stop-begin),&individual_timer_count[1][exit_reason]);
+        return ret;
+    }
+    else if (exit_reason == EXIT_REASON_EXTERNAL_INTERRUPT){
+        ret = handle_external_interrupt(vcpu);
+        stop = rdtsc();
+        atomic64_add((stop - begin),&total_timer_count);
+        atomic64_add((stop-begin),&individual_timer_count[1][exit_reason]);
+        return ret;
+    }
+    else if (exit_reason == EXIT_REASON_HLT){
+        ret = kvm_emulate_halt(vcpu);
+        stop = rdtsc();
+        atomic64_add((stop - begin),&total_timer_count);
+        atomic64_add((stop-begin),&individual_timer_count[1][exit_reason]);
+        return ret;
+    }
+    else if (exit_reason == EXIT_REASON_EPT_MISCONFIG){
+        ret = handle_ept_misconfig(vcpu);
+        stop = rdtsc();
+        atomic64_add((stop - begin),&total_timer_count);
+        atomic64_add((stop-begin),&individual_timer_count[1][exit_reason]);
+        return ret;
+    }
 #endif
 
 	exit_reason = array_index_nospec(exit_reason,
 					 kvm_vmx_max_exit_handlers);
 	if (!kvm_vmx_exit_handlers[exit_reason])
 		goto unexpected_vmexit;
+	
+	ret = kvm_vmx_exit_handlers[exit_reason](vcpu);
+    	stop = rdtsc();
+    	atomic64_add((stop - begin),&total_timer_count);
+    	if(exit_reason < 69){
+        	atomic64_add((stop-begin),&individual_timer_count[1][exit_reason]);
+	    }
 
-	return kvm_vmx_exit_handlers[exit_reason](vcpu);
+	return ret;
 
 unexpected_vmexit:
 	vcpu_unimpl(vcpu, "vmx: unexpected exit reason 0x%x\n", exit_reason);
